@@ -160,6 +160,38 @@
       </section>
 
       <!-- =========================
+           APP CHOOSER (Pay Now)
+      ========================== -->
+
+      <div id="appChooserModal" class="app-chooser-modal hidden">
+        <div
+          class="app-chooser-sheet"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="appChooserTitle">
+          <div class="app-chooser-head">
+            <h3 id="appChooserTitle">Pay with</h3>
+
+            <button
+              id="appChooserClose"
+              class="app-chooser-close"
+              type="button"
+              aria-label="Close">
+              ✕
+            </button>
+          </div>
+
+          <div id="appChooserList" class="app-chooser-list"></div>
+
+          <p id="appChooserStatus" class="app-chooser-status hidden"></p>
+
+          <button id="appChooserMore" class="secondary-btn" type="button">
+            More UPI apps
+          </button>
+        </div>
+      </div>
+
+      <!-- =========================
            FOOTER
       ========================== -->
 

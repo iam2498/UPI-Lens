@@ -846,3 +846,178 @@ footer {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* =========================================================
+   APP CHOOSER MODAL (Pay Now)
+========================================================= */
+
+.app-chooser-modal {
+  position: fixed;
+  inset: 0;
+
+  z-index: 100;
+
+  display: flex;
+
+  align-items: flex-end;
+  justify-content: center;
+
+  background: rgba(16, 24, 40, 0.55);
+
+  backdrop-filter: blur(2px);
+
+  animation: fadeIn 0.18s ease;
+}
+
+.app-chooser-sheet {
+  width: min(480px, 100%);
+
+  max-height: 82vh;
+
+  overflow-y: auto;
+
+  background: #ffffff;
+
+  border-radius: 24px 24px 0 0;
+
+  padding: 20px 18px calc(20px + env(safe-area-inset-bottom, 0px));
+
+  box-shadow: 0 -12px 40px rgba(16, 24, 40, 0.2);
+
+  animation: slideUp 0.22s ease;
+}
+
+@media (min-width: 640px) {
+  .app-chooser-modal {
+    align-items: center;
+  }
+
+  .app-chooser-sheet {
+    border-radius: 24px;
+  }
+}
+
+.app-chooser-head {
+  display: flex;
+
+  align-items: center;
+  justify-content: space-between;
+
+  margin-bottom: 14px;
+}
+
+.app-chooser-head h3 {
+  margin: 0;
+
+  font-size: 18px;
+
+  letter-spacing: -0.02em;
+}
+
+.app-chooser-close {
+  width: 32px;
+  height: 32px;
+
+  border: 0;
+
+  border-radius: 999px;
+
+  background: #f2f4f7;
+
+  color: #475467;
+
+  font-size: 14px;
+
+  cursor: pointer;
+}
+
+.app-chooser-close:hover {
+  background: #eaecf0;
+}
+
+.app-chooser-list {
+  display: grid;
+
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+
+  gap: 10px;
+
+  margin-bottom: 14px;
+}
+
+.app-choice {
+  display: flex;
+
+  align-items: center;
+
+  gap: 10px;
+
+  padding: 14px 15px;
+
+  border: 1px solid #eaecf0;
+
+  border-radius: 14px;
+
+  background: #f8fafc;
+
+  font: inherit;
+  font-weight: 650;
+
+  color: var(--text);
+
+  cursor: pointer;
+
+  transition:
+    background 0.15s ease,
+    transform 0.15s ease;
+}
+
+.app-choice:hover {
+  background: #ffffff;
+
+  box-shadow: var(--shadow-sm);
+
+  transform: translateY(-1px);
+}
+
+.app-choice-icon {
+  font-size: 20px;
+}
+
+.app-chooser-status {
+  margin: 0 0 14px;
+
+  padding: 10px 12px;
+
+  border-radius: 11px;
+
+  background: #f2f4f7;
+
+  color: #475467;
+
+  font-size: 13px;
+
+  text-align: center;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes slideUp {
+  from {
+    transform: translateY(24px);
+    opacity: 0;
+  }
+
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}

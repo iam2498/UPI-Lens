@@ -11,6 +11,29 @@ const payBtn = document.getElementById("payBtn");
 
 let zxingReader = null;
 let currentUPIPaymentUrl = "";
+let currentUPIQueryString = "";
+
+/*
+  Common UPI apps and their own custom URI schemes.
+
+  Android is supposed to show an app picker for a generic
+  "upi://pay" link, but if the user ever tapped "Always" on
+  one app (WhatsApp Pay, most commonly), Android silently
+  skips the picker forever afterwards and always opens that
+  app instead. Targeting each app's own scheme directly
+  sidesteps that broken OS default entirely.
+
+  These schemes are community-documented, not officially
+  published by each company, so they can change. Test on a
+  real device; if one stops working, it can simply be removed
+  or updated here.
+*/
+const UPI_APPS = [
+  { name: "Google Pay", scheme: "tez://upi/pay", icon: "🟢" },
+  { name: "PhonePe", scheme: "phonepe://pay", icon: "🟣" },
+  { name: "Paytm", scheme: "paytmmp://pay", icon: "🔵" },
+  { name: "BHIM", scheme: "bhim://pay", icon: "🇮🇳" },
+];
 
 /*
   Bump this on every new scan. Any in-flight async work checks
@@ -65,31 +88,129 @@ dropZone.addEventListener("drop", (e) => {
 });
 
 /* =========================================================
-   PAY NOW
+   PAY NOW — APP CHOOSER
 ========================================================= */
 
-function openUPIPayment() {
-  if (!currentUPIPaymentUrl) {
+const appChooserModal = document.getElementById("appChooserModal");
+const appChooserList = document.getElementById("appChooserList");
+const appChooserClose = document.getElementById("appChooserClose");
+const appChooserStatus = document.getElementById("appChooserStatus");
+const appChooserMore = document.getElementById("appChooserMore");
+
+function openAppChooser() {
+  if (!currentUPIQueryString || !appChooserModal) {
     return;
   }
 
-  /*
-    Open the standard UPI payment deep link.
+  if (appChooserStatus) {
+    appChooserStatus.classList.add("hidden");
+    appChooserStatus.textContent = "";
+  }
 
-    On a mobile device, this should launch an installed
-    UPI application such as Google Pay, PhonePe, Paytm,
-    BHIM, etc.
+  appChooserModal.classList.remove("hidden");
+}
 
-    The receiver/UPI ID will already be selected.
-    The user can then enter the amount and complete
-    the payment.
-  */
-
-  window.location.href = currentUPIPaymentUrl;
+function closeAppChooser() {
+  if (appChooserModal) {
+    appChooserModal.classList.add("hidden");
+  }
 }
 
 if (payBtn) {
-  payBtn.addEventListener("click", openUPIPayment);
+  payBtn.addEventListener("click", openAppChooser);
+}
+
+if (appChooserClose) {
+  appChooserClose.addEventListener("click", closeAppChooser);
+}
+
+/* Click on the dimmed backdrop closes the sheet */
+if (appChooserModal) {
+  appChooserModal.addEventListener("click", (e) => {
+    if (e.target === appChooserModal) {
+      closeAppChooser();
+    }
+  });
+}
+
+/*
+  "More UPI apps" falls back to the generic upi://pay link,
+  which either shows the OS's own picker (if no default is
+  set) or opens whatever app the OS currently defaults to.
+*/
+if (appChooserMore) {
+  appChooserMore.addEventListener("click", () => {
+    if (currentUPIPaymentUrl) {
+      window.location.href = currentUPIPaymentUrl;
+    }
+  });
+}
+
+function renderAppChooserButtons() {
+  if (!appChooserList) {
+    return;
+  }
+
+  appChooserList.innerHTML = "";
+
+  UPI_APPS.forEach((app) => {
+    const btn = document.createElement("button");
+
+    btn.type = "button";
+    btn.className = "app-choice";
+
+    btn.innerHTML = `
+      <span class="app-choice-icon">${app.icon}</span>
+      <span>${escapeHTML(app.name)}</span>
+    `;
+
+    btn.addEventListener("click", () => tryOpenApp(app));
+
+    appChooserList.appendChild(btn);
+  });
+}
+
+renderAppChooserButtons();
+
+function tryOpenApp(app) {
+  if (!currentUPIQueryString) {
+    return;
+  }
+
+  const deepLink = `${app.scheme}?${currentUPIQueryString}`;
+
+  /*
+    If the deep link actually opens an installed app, the
+    browser tab backgrounds (visibilitychange fires "hidden").
+    If nothing happens within ~1.5s and the tab is still
+    visible, the app almost certainly isn't installed — show
+    a hint instead of silently doing nothing.
+  */
+
+  let appOpened = false;
+
+  const onVisibilityChange = () => {
+    if (document.visibilityState === "hidden") {
+      appOpened = true;
+    }
+  };
+
+  document.addEventListener("visibilitychange", onVisibilityChange);
+
+  if (appChooserStatus) {
+    appChooserStatus.classList.remove("hidden");
+    appChooserStatus.textContent = `Opening ${app.name}...`;
+  }
+
+  window.location.href = deepLink;
+
+  setTimeout(() => {
+    document.removeEventListener("visibilitychange", onVisibilityChange);
+
+    if (!appOpened && appChooserStatus) {
+      appChooserStatus.textContent = `${app.name} doesn't seem to be installed. Try another app, or "More UPI apps" below.`;
+    }
+  }, 1500);
 }
 
 /* =========================================================
@@ -143,6 +264,9 @@ scanAgain.addEventListener("click", () => {
   fileInput.value = "";
 
   currentUPIPaymentUrl = "";
+  currentUPIQueryString = "";
+
+  closeAppChooser();
 
   if (payBtn) {
     payBtn.disabled = true;
@@ -855,7 +979,8 @@ function parseUPI(data) {
     }
   });
 
-  currentUPIPaymentUrl = `upi://pay?${paymentParams.toString()}`;
+  currentUPIQueryString = paymentParams.toString();
+  currentUPIPaymentUrl = `upi://pay?${currentUPIQueryString}`;
 
   /* -------------------------------------------------------
      Display UPI ID
