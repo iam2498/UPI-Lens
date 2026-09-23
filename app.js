@@ -1,8 +1,3 @@
-const cameraBtn = document.getElementById("cameraBtn");
-const cameraPanel = document.getElementById("cameraPanel");
-const closeCamera = document.getElementById("closeCamera");
-const cameraVideo = document.getElementById("cameraVideo");
-const cameraStatus = document.getElementById("cameraStatus");
 const fileInput = document.getElementById("fileInput");
 const dropZone = document.getElementById("dropZone");
 const statusBox = document.getElementById("status");
@@ -12,15 +7,40 @@ const upiIdEl = document.getElementById("upiId");
 const detailsEl = document.getElementById("details");
 const copyBtn = document.getElementById("copyBtn");
 const scanAgain = document.getElementById("scanAgain");
+const payBtn = document.getElementById("payBtn");
 
 let zxingReader = null;
-let cameraStream = null;
-let cameraScanning = false;
+let currentUPIPaymentUrl = "";
+
+/*
+  Bump this on every new scan. Any in-flight async work checks
+  its own captured token against the live one before touching
+  the DOM, so a fast re-scan can never be overwritten by a
+  slower, stale scan that finishes later.
+*/
+let scanToken = 0;
+
+/* Make status updates audible to screen readers */
+if (statusBox) {
+  statusBox.setAttribute("aria-live", "polite");
+  statusBox.setAttribute("role", "status");
+}
+
+/* =========================================================
+   FILE INPUT
+========================================================= */
 
 fileInput.addEventListener("change", (e) => {
   const file = e.target.files?.[0];
-  if (file) processFile(file);
+
+  if (file) {
+    processFile(file);
+  }
 });
+
+/* =========================================================
+   DRAG & DROP
+========================================================= */
 
 ["dragenter", "dragover"].forEach((event) => {
   dropZone.addEventListener(event, (e) => {
@@ -38,13 +58,50 @@ fileInput.addEventListener("change", (e) => {
 
 dropZone.addEventListener("drop", (e) => {
   const file = e.dataTransfer.files?.[0];
-  if (file) processFile(file);
+
+  if (file) {
+    processFile(file);
+  }
 });
+
+/* =========================================================
+   PAY NOW
+========================================================= */
+
+function openUPIPayment() {
+  if (!currentUPIPaymentUrl) {
+    return;
+  }
+
+  /*
+    Open the standard UPI payment deep link.
+
+    On a mobile device, this should launch an installed
+    UPI application such as Google Pay, PhonePe, Paytm,
+    BHIM, etc.
+
+    The receiver/UPI ID will already be selected.
+    The user can then enter the amount and complete
+    the payment.
+  */
+
+  window.location.href = currentUPIPaymentUrl;
+}
+
+if (payBtn) {
+  payBtn.addEventListener("click", openUPIPayment);
+}
+
+/* =========================================================
+   COPY UPI ID
+========================================================= */
 
 copyBtn.addEventListener("click", async () => {
   const upiId = upiIdEl.textContent.trim();
 
-  if (!upiId || upiId === "—") return;
+  if (!upiId || upiId === "—") {
+    return;
+  }
 
   try {
     await navigator.clipboard.writeText(upiId);
@@ -60,8 +117,11 @@ copyBtn.addEventListener("click", async () => {
     textarea.value = upiId;
 
     document.body.appendChild(textarea);
+
     textarea.select();
+
     document.execCommand("copy");
+
     textarea.remove();
 
     copyBtn.textContent = "Copied ✓";
@@ -72,8 +132,22 @@ copyBtn.addEventListener("click", async () => {
   }
 });
 
+/* =========================================================
+   SCAN AGAIN
+========================================================= */
+
 scanAgain.addEventListener("click", () => {
+  /* Invalidate any scan still running in the background */
+  scanToken++;
+
   fileInput.value = "";
+
+  currentUPIPaymentUrl = "";
+
+  if (payBtn) {
+    payBtn.disabled = true;
+    payBtn.classList.add("disabled");
+  }
 
   resultBox.classList.add("hidden");
   errorBox.classList.add("hidden");
@@ -87,6 +161,19 @@ scanAgain.addEventListener("click", () => {
 ========================================================= */
 
 async function processFile(file) {
+  /* Reject non-image files early with a clean error */
+  if (file.type && !file.type.startsWith("image/")) {
+    dropZone.classList.remove("hidden");
+    errorBox.textContent =
+      "That doesn't look like an image file. Please upload a photo or screenshot of the QR code.";
+    errorBox.classList.remove("hidden");
+    return;
+  }
+
+  /* This scan's identity. Any DOM write below first checks
+     this still matches the live scanToken. */
+  const myToken = ++scanToken;
+
   resultBox.classList.add("hidden");
   errorBox.classList.add("hidden");
   dropZone.classList.add("hidden");
@@ -97,9 +184,13 @@ async function processFile(file) {
   try {
     const image = await loadImage(file);
 
+    if (myToken !== scanToken) return; // superseded by a newer scan
+
     statusBox.textContent = "Looking for QR code...";
 
-    const qrData = await smartDecode(image);
+    const qrData = await smartDecode(image, myToken);
+
+    if (myToken !== scanToken) return; // superseded
 
     if (!qrData) {
       throw new Error(
@@ -111,6 +202,8 @@ async function processFile(file) {
 
     parseUPI(qrData);
   } catch (error) {
+    if (myToken !== scanToken) return; // superseded, don't show a stale error
+
     console.error(error);
 
     dropZone.classList.remove("hidden");
@@ -123,85 +216,108 @@ async function processFile(file) {
 }
 
 /* =========================================================
-   SMART QR DECODER
+   SMART QR DECODER (tiered)
 ========================================================= */
 
-async function smartDecode(image) {
-  /*
-       We don't just scan the original image.
+/*
+  Tier 1: the two cheapest, most-likely-to-succeed candidates
+  (original + enlarged), decoded with jsQR first since it's
+  synchronous and fast, falling back to ZXing only if needed.
 
-       We create multiple candidate images:
+  Tier 2: if tier 1 fails on both engines, escalate to the
+  full crop/filter cascade for hard cases (glare, tilt, low
+  contrast, partial frame, etc).
 
-       1. Original
-       2. Enlarged
-       3. Center crop
-       4. Large center crop
-       5. Top / bottom / left / right crops
-       6. Grayscale
-       7. High contrast
-       8. Sharpened
-       9. Inverted
-       10. Rotated versions
+  This means a clean, well-lit QR photo resolves in 1-4 quick
+  attempts instead of always running the full ~25-candidate,
+  dual-engine cascade.
+*/
 
-       This makes the decoder much more tolerant of
-       real-world QR photographs.
-    */
+async function smartDecode(image, myToken) {
+  const quickCandidates = createQuickCandidates(image);
 
-  const candidates = createCandidates(image);
+  const quickResult = await tryCandidates(quickCandidates, myToken);
 
-  console.log(`Trying ${candidates.length} QR candidates...`);
+  if (quickResult) {
+    return quickResult;
+  }
 
+  if (myToken !== scanToken) return null;
+
+  statusBox.textContent = "Trying harder — enhancing image...";
+
+  const fullCandidates = createFullCandidates(image);
+
+  return tryCandidates(fullCandidates, myToken, quickCandidates.length);
+}
+
+async function tryCandidates(candidates, myToken, offset = 0) {
   for (let i = 0; i < candidates.length; i++) {
-    statusBox.textContent = `Scanning QR... ${i + 1}/${candidates.length}`;
+    if (myToken !== scanToken) return null; // abandon stale scan
+
+    statusBox.textContent = `Scanning QR... ${offset + i + 1}`;
 
     const candidate = candidates[i];
 
-    // First try ZXing
-    const zxingResult = await decodeWithZXing(candidate);
+    /* -----------------------------------------------------
+       jsQR first: synchronous, cheap, resolves most photos
+    ----------------------------------------------------- */
 
-    if (zxingResult) {
-      console.log("QR decoded using ZXing");
-      return zxingResult;
-    }
-
-    // Then try jsQR
     const jsqrResult = decodeWithJSQR(candidate);
 
     if (jsqrResult) {
-      console.log("QR decoded using jsQR");
+      console.log(`QR decoded using jsQR on ${candidate.name}`);
+
       return jsqrResult;
     }
 
-    // Give browser a tiny break between heavy image operations
-    await sleep(10);
+    /* -----------------------------------------------------
+       ZXing second: slower (async), catches cases jsQR misses
+    ----------------------------------------------------- */
+
+    const zxingResult = await decodeWithZXing(candidate);
+
+    if (zxingResult) {
+      console.log(`QR decoded using ZXing on ${candidate.name}`);
+
+      return zxingResult;
+    }
+
+    /* -----------------------------------------------------
+       Give browser a tiny break between heavy operations
+    ----------------------------------------------------- */
+
+    await sleep(0);
   }
 
   return null;
 }
 
 /* =========================================================
-   CREATE MANY IMAGE CANDIDATES
+   QUICK CANDIDATES (tier 1)
 ========================================================= */
 
-function createCandidates(image) {
+function createQuickCandidates(image) {
+  return [
+    { name: "original", canvas: imageToCanvas(image) },
+    { name: "large", canvas: imageToCanvas(image, 1.5) },
+  ];
+}
+
+/* =========================================================
+   FULL CANDIDATES (tier 2 — the exhaustive cascade)
+========================================================= */
+
+function createFullCandidates(image) {
   const candidates = [];
 
-  const width = image.naturalWidth;
-  const height = image.naturalHeight;
+  const width = image.naturalWidth ?? image.width;
+  const height = image.naturalHeight ?? image.height;
 
-  // 1. Original
-  candidates.push({
-    name: "original",
-    canvas: imageToCanvas(image),
-  });
+  /* -------------------------------------------------------
+     Center 85%
+  ------------------------------------------------------- */
 
-  // 2. Enlarged full image
-  candidates.push({
-    name: "large",
-    canvas: imageToCanvas(image, 1.5),
-  });
-
-  // 3. Center 85%
   candidates.push({
     name: "center-85",
     canvas: cropCanvas(
@@ -213,7 +329,10 @@ function createCandidates(image) {
     ),
   });
 
-  // 4. Center 70%
+  /* -------------------------------------------------------
+     Center 70%
+  ------------------------------------------------------- */
+
   candidates.push({
     name: "center-70",
     canvas: cropCanvas(
@@ -225,45 +344,47 @@ function createCandidates(image) {
     ),
   });
 
-  // 5. Middle wide region
+  /* -------------------------------------------------------
+     Middle wide region
+  ------------------------------------------------------- */
+
   candidates.push({
     name: "middle",
     canvas: cropCanvas(image, 0, height * 0.15, width, height * 0.7),
   });
 
-  // 6. Top half
+  /* -------------------------------------------------------
+     Top / Bottom / Left / Right halves
+  ------------------------------------------------------- */
+
   candidates.push({
     name: "top",
     canvas: cropCanvas(image, 0, 0, width, height * 0.6),
   });
 
-  // 7. Bottom half
   candidates.push({
     name: "bottom",
     canvas: cropCanvas(image, 0, height * 0.4, width, height * 0.6),
   });
 
-  // 8. Left half
   candidates.push({
     name: "left",
     canvas: cropCanvas(image, 0, 0, width * 0.6, height),
   });
 
-  // 9. Right half
   candidates.push({
     name: "right",
     canvas: cropCanvas(image, width * 0.4, 0, width * 0.6, height),
   });
 
-  /*
-       Add processed versions of the most important regions.
-    */
+  /* -------------------------------------------------------
+     Filtered variants of the most useful base crops
+  ------------------------------------------------------- */
 
   const baseCandidates = [
-    candidates[0],
-    candidates[1],
-    candidates[2],
-    candidates[3],
+    { name: "original", canvas: imageToCanvas(image) },
+    candidates[0], // center-85
+    candidates[1], // center-70
   ];
 
   for (const candidate of baseCandidates) {
@@ -298,7 +419,6 @@ function createCandidates(image) {
 async function decodeWithZXing(candidate) {
   try {
     if (typeof ZXingBrowser === "undefined") {
-      console.log("ZXing not loaded");
       return null;
     }
 
@@ -314,8 +434,9 @@ async function decodeWithZXing(candidate) {
       return result.getText();
     }
   } catch (error) {
-    // Expected when a candidate doesn't contain a QR.
-    console.log(`ZXing failed on ${candidate.name}`);
+    /*
+      Expected when a candidate doesn't contain a QR.
+    */
   }
 
   return null;
@@ -360,8 +481,12 @@ function decodeWithJSQR(candidate) {
 function imageToCanvas(image, scale = 1) {
   const maxSize = 2400;
 
-  let width = image.naturalWidth * scale;
-  let height = image.naturalHeight * scale;
+  const naturalWidth = image.naturalWidth ?? image.width;
+  const naturalHeight = image.naturalHeight ?? image.height;
+
+  let width = naturalWidth * scale;
+
+  let height = naturalHeight * scale;
 
   const largest = Math.max(width, height);
 
@@ -375,6 +500,7 @@ function imageToCanvas(image, scale = 1) {
   const canvas = document.createElement("canvas");
 
   canvas.width = Math.round(width);
+
   canvas.height = Math.round(height);
 
   const ctx = canvas.getContext("2d", {
@@ -486,15 +612,16 @@ function sharpenCanvas(source) {
   const output = new Uint8ClampedArray(src);
 
   const width = canvas.width;
+
   const height = canvas.height;
 
   /*
-       Simple sharpening kernel:
+    Simple sharpening kernel:
 
-       0  -1   0
-      -1   5  -1
-       0  -1   0
-    */
+     0  -1   0
+    -1   5  -1
+     0  -1   0
+  */
 
   for (let y = 1; y < height - 1; y++) {
     for (let x = 1; x < width - 1; x++) {
@@ -537,7 +664,9 @@ function invertCanvas(source) {
 
   for (let i = 0; i < data.length; i += 4) {
     data[i] = 255 - data[i];
+
     data[i + 1] = 255 - data[i + 1];
+
     data[i + 2] = 255 - data[i + 2];
   }
 
@@ -554,6 +683,7 @@ function cloneCanvas(source) {
   const canvas = document.createElement("canvas");
 
   canvas.width = source.width;
+
   canvas.height = source.height;
 
   const ctx = canvas.getContext("2d", {
@@ -574,6 +704,7 @@ function canvasToImage(canvas) {
     const image = new Image();
 
     image.onload = () => resolve(image);
+
     image.onerror = reject;
 
     image.src = canvas.toDataURL("image/png");
@@ -581,10 +712,31 @@ function canvasToImage(canvas) {
 }
 
 /* =========================================================
-   LOAD UPLOADED IMAGE
+   LOAD UPLOADED IMAGE (EXIF-orientation aware)
 ========================================================= */
 
-function loadImage(file) {
+async function loadImage(file) {
+  /*
+    Phone camera photos often carry EXIF orientation metadata.
+    createImageBitmap with imageOrientation: "from-image" applies
+    that rotation automatically, so a sideways/upside-down QR
+    photo still decodes correctly. Falls back to the classic
+    Image() + object URL approach for browsers/files where
+    createImageBitmap isn't available or fails.
+  */
+
+  if (typeof createImageBitmap === "function") {
+    try {
+      const bitmap = await createImageBitmap(file, {
+        imageOrientation: "from-image",
+      });
+
+      return bitmap; // has .width / .height, works with drawImage
+    } catch (error) {
+      console.log("createImageBitmap failed, falling back to Image()", error);
+    }
+  }
+
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
 
@@ -613,7 +765,16 @@ function loadImage(file) {
 function parseUPI(data) {
   const text = data.trim();
 
-  if (!/^upi:\/\/pay(?:\?|$)/i.test(text)) {
+  /* -------------------------------------------------------
+     Validate UPI URL — accepts both the standard upi://pay
+     scheme and the legacy tez://upi/pay scheme still emitted
+     by some older/regional UPI apps.
+  ------------------------------------------------------- */
+
+  const isStandardUPI = /^upi:\/\/pay(?:\?|$)/i.test(text);
+  const isTezUPI = /^tez:\/\/upi\/pay(?:\?|$)/i.test(text);
+
+  if (!isStandardUPI && !isTezUPI) {
     throw new Error(
       "QR was decoded, but it is not a supported UPI payment QR.",
     );
@@ -622,7 +783,12 @@ function parseUPI(data) {
   let url;
 
   try {
-    url = new URL(text);
+    /* Normalize tez:// to a URL the URL() constructor parses the same way */
+    const normalized = isTezUPI
+      ? text.replace(/^tez:\/\/upi\/pay/i, "upi://pay")
+      : text;
+
+    url = new URL(normalized);
   } catch {
     throw new Error("The UPI payment data is invalid.");
   }
@@ -635,13 +801,81 @@ function parseUPI(data) {
     throw new Error("This UPI QR does not contain a UPI ID.");
   }
 
+  /* -------------------------------------------------------
+     Validate UPI ID
+  ------------------------------------------------------- */
+
   const validUPI = /^[^\s@]+@[^\s@]+$/;
 
   if (!validUPI.test(upiId)) {
     throw new Error("The extracted UPI ID does not have a valid format.");
   }
 
+  /* -------------------------------------------------------
+     Build UPI Payment Deep Link
+  ------------------------------------------------------- */
+
+  const paymentParams = new URLSearchParams();
+
+  /*
+    Preserve supported UPI payment parameters.
+
+    pa  = Payee UPI ID
+    pn  = Payee name
+    mc  = Merchant code
+    tid = Transaction ID
+    tr  = Transaction reference
+    tn  = Transaction note
+    am  = Amount
+    cu  = Currency
+    url = URL
+    mode = Mode
+    orgid = Organization ID
+    sign = Signature
+  */
+
+  [
+    "pa",
+    "pn",
+    "mc",
+    "tid",
+    "tr",
+    "tn",
+    "am",
+    "cu",
+    "url",
+    "mode",
+    "orgid",
+    "sign",
+  ].forEach((key) => {
+    const value = params.get(key);
+
+    if (value) {
+      paymentParams.set(key, value);
+    }
+  });
+
+  currentUPIPaymentUrl = `upi://pay?${paymentParams.toString()}`;
+
+  /* -------------------------------------------------------
+     Display UPI ID
+  ------------------------------------------------------- */
+
   upiIdEl.textContent = upiId;
+
+  /* -------------------------------------------------------
+     Enable Pay Now
+  ------------------------------------------------------- */
+
+  if (payBtn) {
+    payBtn.disabled = false;
+
+    payBtn.classList.remove("disabled");
+  }
+
+  /* -------------------------------------------------------
+     Display Details
+  ------------------------------------------------------- */
 
   const details = [
     ["Payee name", params.get("pn")],
@@ -658,21 +892,28 @@ function parseUPI(data) {
   ];
 
   detailsEl.innerHTML = details
+
     .filter(([, value]) => value)
+
     .map(
       ([label, value]) => `
-                <div class="detail">
-                    <span class="label">
-                        ${escapeHTML(label)}
-                    </span>
+          <div class="detail">
+            <span class="label">
+              ${escapeHTML(label)}
+            </span>
 
-                    <strong>
-                        ${escapeHTML(value)}
-                    </strong>
-                </div>
-            `,
+            <strong>
+              ${escapeHTML(value)}
+            </strong>
+          </div>
+        `,
     )
+
     .join("");
+
+  /* -------------------------------------------------------
+     Show Result
+  ------------------------------------------------------- */
 
   statusBox.classList.add("hidden");
 
@@ -680,11 +921,13 @@ function parseUPI(data) {
 }
 
 /* =========================================================
-   HELPERS
+   FORMAT AMOUNT
 ========================================================= */
 
 function formatAmount(amount, currency) {
-  if (!amount) return "";
+  if (!amount) {
+    return "";
+  }
 
   if (currency?.toUpperCase() === "INR") {
     return `₹${amount}`;
@@ -693,177 +936,35 @@ function formatAmount(amount, currency) {
   return `${amount} ${currency || ""}`.trim();
 }
 
+/* =========================================================
+   ESCAPE HTML
+========================================================= */
+
 function escapeHTML(value) {
   return String(value)
     .replaceAll("&", "&amp;")
+
     .replaceAll("<", "&lt;")
+
     .replaceAll(">", "&gt;")
+
     .replaceAll('"', "&quot;")
+
     .replaceAll("'", "&#039;");
 }
+
+/* =========================================================
+   CLAMP
+========================================================= */
 
 function clamp(value) {
   return Math.max(0, Math.min(255, value));
 }
 
+/* =========================================================
+   SLEEP
+========================================================= */
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/* =========================================================
-   CAMERA SCANNER
-========================================================= */
-
-cameraBtn.addEventListener("click", startCamera);
-
-closeCamera.addEventListener("click", stopCamera);
-
-async function startCamera() {
-  try {
-    // Hide upload UI
-    dropZone.classList.add("hidden");
-
-    // Hide previous results/errors
-    resultBox.classList.add("hidden");
-    errorBox.classList.add("hidden");
-    statusBox.classList.add("hidden");
-
-    cameraPanel.classList.remove("hidden");
-
-    cameraStatus.textContent = "Requesting camera permission...";
-
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      throw new Error("Camera access is not supported by this browser.");
-    }
-
-    cameraStream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        facingMode: {
-          ideal: "environment",
-        },
-
-        width: {
-          ideal: 1280,
-        },
-
-        height: {
-          ideal: 720,
-        },
-      },
-
-      audio: false,
-    });
-
-    cameraVideo.srcObject = cameraStream;
-
-    await cameraVideo.play();
-
-    cameraStatus.textContent = "Point your camera at a UPI QR";
-
-    cameraScanning = true;
-
-    scanCameraFrame();
-  } catch (error) {
-    console.error(error);
-
-    stopCamera();
-
-    errorBox.textContent =
-      error.name === "NotAllowedError"
-        ? "Camera permission was denied. Please allow camera access and try again."
-        : error.message || "Could not access the camera.";
-
-    errorBox.classList.remove("hidden");
-  }
-}
-
-function stopCamera() {
-  cameraScanning = false;
-
-  if (cameraStream) {
-    cameraStream.getTracks().forEach((track) => track.stop());
-
-    cameraStream = null;
-  }
-
-  cameraVideo.srcObject = null;
-
-  cameraPanel.classList.add("hidden");
-
-  dropZone.classList.remove("hidden");
-}
-
-/* =========================================================
-   CONTINUOUS CAMERA SCANNING
-========================================================= */
-
-async function scanCameraFrame() {
-  if (!cameraScanning) {
-    return;
-  }
-
-  if (cameraVideo.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
-    requestAnimationFrame(scanCameraFrame);
-
-    return;
-  }
-
-  try {
-    const canvas = document.createElement("canvas");
-
-    const width = cameraVideo.videoWidth;
-
-    const height = cameraVideo.videoHeight;
-
-    canvas.width = width;
-    canvas.height = height;
-
-    const ctx = canvas.getContext("2d", {
-      willReadFrequently: true,
-    });
-
-    ctx.drawImage(cameraVideo, 0, 0, width, height);
-
-    /*
-           First try jsQR because it works directly
-           with camera frame pixel data.
-        */
-
-    const imageData = ctx.getImageData(0, 0, width, height);
-
-    const result = jsQR(imageData.data, width, height, {
-      inversionAttempts: "attemptBoth",
-    });
-
-    if (result) {
-      console.log("Camera QR detected:", result.data);
-
-      handleCameraResult(result.data);
-
-      return;
-    }
-  } catch (error) {
-    console.log("Camera frame decode failed:", error);
-  }
-
-  requestAnimationFrame(scanCameraFrame);
-}
-
-/* =========================================================
-   CAMERA RESULT
-========================================================= */
-
-function handleCameraResult(data) {
-  cameraScanning = false;
-
-  stopCamera();
-
-  try {
-    parseUPI(data);
-  } catch (error) {
-    errorBox.textContent =
-      error.message || "This QR could not be used as a UPI payment QR.";
-
-    errorBox.classList.remove("hidden");
-  }
 }
