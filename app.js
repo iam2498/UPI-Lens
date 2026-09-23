@@ -29,10 +29,52 @@ let currentUPIQueryString = "";
   or updated here.
 */
 const UPI_APPS = [
-  { name: "Google Pay", scheme: "tez://upi/pay", icon: "🟢" },
-  { name: "PhonePe", scheme: "phonepe://pay", icon: "🟣" },
-  { name: "Paytm", scheme: "paytmmp://pay", icon: "🔵" },
-  { name: "BHIM", scheme: "bhim://pay", icon: "🇮🇳" },
+  {
+    name: "Google Pay",
+    scheme: "tez://upi/pay",
+    iconSvg: `
+      <svg viewBox="0 0 40 40" width="28" height="28" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="20" cy="20" r="19" fill="#ffffff" stroke="#e4e7ec"/>
+        <path d="M20 20 L20 2 A18 18 0 0 1 38 20 Z" fill="#4285F4"/>
+        <path d="M20 20 L38 20 A18 18 0 0 1 20 38 Z" fill="#34A853"/>
+        <path d="M20 20 L20 38 A18 18 0 0 1 2 20 Z" fill="#FBBC05"/>
+        <path d="M20 20 L2 20 A18 18 0 0 1 20 2 Z" fill="#EA4335"/>
+      </svg>
+    `,
+  },
+  {
+    name: "PhonePe",
+    scheme: "phonepe://pay",
+    iconSvg: `
+      <svg viewBox="0 0 40 40" width="28" height="28" xmlns="http://www.w3.org/2000/svg">
+        <rect width="40" height="40" rx="10" fill="#5F259F"/>
+        <text x="20" y="27" font-family="Arial, sans-serif" font-size="20" font-weight="700" fill="#ffffff" text-anchor="middle">P</text>
+      </svg>
+    `,
+  },
+  {
+    name: "Paytm",
+    scheme: "paytmmp://pay",
+    iconSvg: `
+      <svg viewBox="0 0 40 40" width="28" height="28" xmlns="http://www.w3.org/2000/svg">
+        <rect width="40" height="40" rx="10" fill="#00BAF2"/>
+        <text x="20" y="27" font-family="Arial, sans-serif" font-size="19" font-weight="700" fill="#ffffff" text-anchor="middle">₹</text>
+      </svg>
+    `,
+  },
+  {
+    name: "BHIM",
+    scheme: "bhim://pay",
+    iconSvg: `
+      <svg viewBox="0 0 40 40" width="28" height="28" xmlns="http://www.w3.org/2000/svg">
+        <rect width="40" height="40" rx="10" fill="#ffffff" stroke="#e4e7ec"/>
+        <rect y="6" width="40" height="9" fill="#FF9933"/>
+        <rect y="15" width="40" height="9" fill="#ffffff"/>
+        <rect y="24" width="40" height="9" fill="#138808"/>
+        <text x="20" y="26" font-family="Arial, sans-serif" font-size="14" font-weight="800" fill="#0b3d91" text-anchor="middle">B</text>
+      </svg>
+    `,
+  },
 ];
 
 /*
@@ -160,7 +202,7 @@ function renderAppChooserButtons() {
     btn.className = "app-choice";
 
     btn.innerHTML = `
-      <span class="app-choice-icon">${app.icon}</span>
+      <span class="app-choice-icon">${app.iconSvg}</span>
       <span>${escapeHTML(app.name)}</span>
     `;
 

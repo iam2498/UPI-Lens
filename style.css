@@ -981,7 +981,16 @@ footer {
 }
 
 .app-choice-icon {
-  font-size: 20px;
+  display: inline-flex;
+
+  flex-shrink: 0;
+}
+
+.app-choice-icon svg {
+  display: block;
+
+  width: 28px;
+  height: 28px;
 }
 
 .app-chooser-status {
