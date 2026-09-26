@@ -979,41 +979,30 @@ function parseUPI(data) {
 
   /* -------------------------------------------------------
      Build UPI Payment Deep Link
+
+     NOTE: Only pa / pn / am / cu / tn are forwarded here —
+     deliberately NOT mc, tid, tr, orgid, sign, mode, url.
+
+     Those extra fields belong to the ORIGINAL merchant QR
+     and are tied to NPCI's cryptographic "sign" signature
+     over that exact payload. Re-serializing them through
+     URLSearchParams changes the byte-for-byte string the
+     signature was computed over, so the signature becomes
+     invalid. Receiving UPI apps then treat the intent as an
+     unverified/tampered merchant QR — which is what triggers
+     the ₹2,000 gallery-QR-style cap and payment failures,
+     even when the underlying UPI ID is perfectly valid.
+
+     Forwarding only pa/pn/am/cu/tn reproduces a plain
+     "pay to UPI ID" intent — the same shape as a user typing
+     the UPI ID directly into their UPI app — with no signed
+     merchant payload attached, so it isn't second-guessed by
+     the receiving app's merchant-verification checks.
   ------------------------------------------------------- */
 
   const paymentParams = new URLSearchParams();
 
-  /*
-    Preserve supported UPI payment parameters.
-
-    pa  = Payee UPI ID
-    pn  = Payee name
-    mc  = Merchant code
-    tid = Transaction ID
-    tr  = Transaction reference
-    tn  = Transaction note
-    am  = Amount
-    cu  = Currency
-    url = URL
-    mode = Mode
-    orgid = Organization ID
-    sign = Signature
-  */
-
-  [
-    "pa",
-    "pn",
-    "mc",
-    "tid",
-    "tr",
-    "tn",
-    "am",
-    "cu",
-    "url",
-    "mode",
-    "orgid",
-    "sign",
-  ].forEach((key) => {
+  ["pa", "pn", "am", "cu", "tn"].forEach((key) => {
     const value = params.get(key);
 
     if (value) {
